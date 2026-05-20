@@ -1,0 +1,17 @@
+# Personal notes - not for GitHub
+NOTES.md
+PROGRESS.md
+
+# Obsidian config
+.obsidian/
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfvars
+
+# OS
+.DS_Store
+Thumbs.db
