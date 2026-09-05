@@ -142,7 +142,11 @@ A t3.micro in the first private subnet, behind `create_test_host = false`, so a 
 - `depends_on` the endpoints: without them the agent boots, resolves public IPs, fails, and backs off for minutes
 
 ### What was proven
-Applied with `-var create_test_host=true`, then verified, then destroyed in the same session. The agent registered as `Online` about 60 seconds after boot. Output of the checks run on the host through SSM:
+Applied with `-var create_test_host=true`, then verified, then destroyed in the same session. The agent registered as `Online` about 60 seconds after boot.
+
+![Session Manager session into a private host: no public IP, no SSH, IMDSv1 refused, IMDSv2 returns the role, no route to the internet](docs/ssm-session.png)
+
+The same checks, run through SSM Run Command (as `root`, where the interactive session runs as `ssm-user`):
 
 ```
 == whoami / ip ==
