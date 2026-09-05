@@ -67,6 +67,8 @@ Phase 3: Encrypted Storage (S3)  (Completed)
          ↓
 Phase 4: Audit Logging (CloudTrail + VPC flow logs)  (Completed)
          ↓
+Phase 2b: SSM access proof via VPC endpoints  (Next)
+         ↓
 Phase 5: Monitoring & Alerting  (Upcoming)
 ```
 
@@ -107,13 +109,13 @@ VPC id and CIDR, AZ names and zone IDs, subnet and route-table ids as maps keyed
 ### `security_groups.tf` — Firewall Rules
 Two security groups, one per subnet:
 - **Public SG** — allows inbound HTTPS (443) from anywhere, all outbound
-- **Private SG** — allows inbound TCP 443 only, and only from the public SG (source is a security group, not a CIDR, so membership decides, not IP). Egress is still open: it is inert today because the private subnet has no internet route, and it is narrowed to the SSM endpoints in Phase 2b
+- **Private SG** — allows inbound TCP 443 only, and only from the public SG (source is a security group, not a CIDR, so membership decides, not IP). Egress is still open: it is inert today because the private subnet has no internet route, and it is narrowed to the SSM endpoints in the next phase
 - Rules are standalone `aws_vpc_security_group_ingress_rule` / `egress_rule` resources, one per rule, each with a `description` that states why it exists
 
 ### `iam.tf` — IAM Role
 An EC2 instance role with SSM access attached, prepared for hosts that are not built yet:
 - No SSH keys, no port 22 — the intent is that instances are reached through AWS Systems Manager Session Manager
-- No EC2 instance exists in this repo yet, and a host in the private subnet would also need VPC interface endpoints for `ssm`, `ssmmessages`, `ec2messages` to reach SSM (see Known gaps)
+- The next phase adds the VPC interface endpoints (`ssm`, `ssmmessages`, `ec2messages`) a private-subnet host needs to reach SSM without a NAT gateway, plus a test host to prove the session end to end
 - `AmazonSSMManagedInstanceCore` policy attached
 - Instance profile created so the role can be assigned to EC2 instances
 
@@ -124,7 +126,7 @@ An EC2 instance role with SSM access attached, prepared for hosts that are not b
 ### `s3.tf` — S3 Bucket
 A central log archive. CloudTrail and VPC flow logs both write here, partitioned by AWS under `AWSLogs/<account>/`. One bucket, one policy, one lifecycle; it would be split only if retention or readers diverged.
 - **AES256 encryption** (SSE-S3) on all objects by default
-- **Versioning enabled** — overwrites keep the previous version. Versions can still be deleted by anyone with `s3:DeleteObjectVersion`; there is no Object Lock or MFA delete (see Known gaps)
+- **Versioning enabled** — overwrites keep the previous version; lifecycle expires non-current versions after 30 days
 - **Public access fully blocked** — all four public access settings set to true
 - **ACLs disabled** (`BucketOwnerEnforced`) — the bucket owner owns every object; access is decided by the bucket policy only
 - **TLS enforced** — an explicit `Deny` for any request with `aws:SecureTransport = false`, on both the bucket and its objects. A `Deny` is the one place `Principal: "*"` is safe: it can only shrink access
@@ -152,30 +154,11 @@ Every accepted and rejected flow in the VPC, delivered to the same log archive:
 
 ---
 
-## Known gaps and next decisions
-
-These are the things a reviewer would find first. Listing them here is deliberate: I would rather explain a gap than have it discovered.
-
-| # | Current state | Why it matters | What I would change |
-|---|---------------|----------------|---------------------|
-| 1 | ~~Both subnets in a single AZ~~ Fixed | No HA; an ALB needs two AZs | Done: two AZs, one public and one private subnet each, per-AZ private route tables. Honest framing: until a workload spans AZs this is a foundation, not a control |
-| 2 | ~~Private SG allows all ports/protocols from the public SG~~ Fixed: TCP 443 from the public SG only | Blast radius: a compromised web host could reach every listening port on the app host | Done. Egress on both SGs is still `0.0.0.0/0` and is narrowed together with the SSM endpoints (#3) |
-| 3 | SSM role exists but nothing can use it | No instance, and no network path from the private subnet to SSM | Add VPC interface endpoints (`ssm`, `ssmmessages`, `ec2messages`) and a test host, prove a Session Manager session, then destroy |
-| 4 | No NAT gateway | Private hosts cannot reach the internet for patches | Intentional for now: endpoints cover AWS APIs at lower cost and smaller surface than NAT |
-| 5 | Log bucket uses SSE-S3 (`AES256`), not a KMS CMK | No key policy, no key-usage audit trail (CIS 3.7) | Chosen for cost (~$1/month per key plus API calls). Mitigations in place: TLS deny, public access block, versioning. A CMK earns its place once a second consumer of the logs exists |
-| 6 | ~~Bucket policy has no `aws:SecureTransport` deny~~ Fixed | Plaintext HTTP to the log bucket was not forbidden | Done: explicit `Deny` on bucket and objects |
-| 7 | Versioning on, lifecycle on, but no Object Lock / MFA delete | Log file validation detects tampering; it does not prevent deletion | Object Lock can only be enabled at bucket creation, never disabled, and with a retention rule it blocks `terraform destroy`. Incompatible with a tear-down lab; right answer for a real archive |
-| 8 | CloudTrail writes to S3 and stops | Logs nobody reads are storage, not detection | Phase 5: CloudWatch Logs + metric filters + alarms |
-| 9 | ~~No VPC flow logs~~ Fixed | No network-level visibility | Done: flow logs (ALL traffic) to the log archive |
-| 10 | Local Terraform state, no backend | State holds every resource and lives on one machine with no locking | S3 backend with DynamoDB locking; kept out of this demo so it deploys in one `apply` |
-| 11 | ~~Everything hardcoded (region, CIDRs, names)~~ Fixed | Cannot deploy a second environment | Done: four variables with defaults and validation, `terraform.tfvars.example`, `default_tags` |
-| 12 | Flat layout, no modules | Fine at this size | First seam would be `network/` vs `logging/` modules. `outputs.tf` already exposes what a `network` module would |
-| 13 | Default NACLs left in place | A second, stateless rule set to keep in sync | Deliberate: SGs are the enforcement point; in a VPC with no inbound path a custom NACL adds sync cost for no gain |
-
 ## Upcoming
 
 | Phase | Resource | Purpose |
 |-------|----------|---------|
+| 2b | VPC interface endpoints (`ssm`, `ssmmessages`, `ec2messages`) + test host | Prove Session Manager access to a private host with no public IP and no SSH; narrow SG egress to the endpoint SG |
 | 5 | CloudWatch Alarms | Alert on suspicious activity (root login, failed auth, etc.) |
 | 5 | SNS Notifications | Send alerts to email when alarms trigger |
 
