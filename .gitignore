@@ -7,7 +7,6 @@ _memory/
 
 # Terraform
 .terraform/
-.terraform.lock.hcl
 *.tfstate
 *.tfstate.backup
 *.tfvars
