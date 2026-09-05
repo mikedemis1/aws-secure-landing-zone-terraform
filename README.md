@@ -98,7 +98,8 @@ Controls where traffic goes:
 ### `security_groups.tf` — Firewall Rules
 Two security groups, one per subnet:
 - **Public SG** — allows inbound HTTPS (443) from anywhere, all outbound
-- **Private SG** — allows inbound traffic only from the public SG, nothing from the internet. Currently all ports/protocols from that SG (see Known gaps). Egress is open; the private subnet has no internet because it has no route, not because of this SG
+- **Private SG** — allows inbound TCP 443 only, and only from the public SG (source is a security group, not a CIDR, so membership decides, not IP). Egress is still open: it is inert today because the private subnet has no internet route, and it is narrowed to the SSM endpoints in Phase 2b
+- Rules are standalone `aws_vpc_security_group_ingress_rule` / `egress_rule` resources, one per rule, each with a `description` that states why it exists
 
 ### `iam.tf` — IAM Role
 An EC2 instance role with SSM access attached, prepared for hosts that are not built yet:
@@ -138,7 +139,7 @@ These are the things a reviewer would find first. Listing them here is deliberat
 | # | Current state | Why it matters | What I would change |
 |---|---------------|----------------|---------------------|
 | 1 | Both subnets in a single AZ (`eu-west-1a`) | No HA; an ALB needs two AZs | Add a second AZ with a public and private subnet each |
-| 2 | Private SG allows all ports/protocols from the public SG | Not least privilege | Narrow to the ports the private tier actually serves |
+| 2 | ~~Private SG allows all ports/protocols from the public SG~~ Fixed: TCP 443 from the public SG only | Blast radius: a compromised web host could reach every listening port on the app host | Done. Egress on both SGs is still `0.0.0.0/0` and is narrowed together with the SSM endpoints (#3) |
 | 3 | SSM role exists but nothing can use it | No instance, and no network path from the private subnet to SSM | Add VPC interface endpoints (`ssm`, `ssmmessages`, `ec2messages`) and a test host, prove a Session Manager session, then destroy |
 | 4 | No NAT gateway | Private hosts cannot reach the internet for patches | Intentional for now: endpoints cover AWS APIs at lower cost and smaller surface than NAT |
 | 5 | Log bucket uses SSE-S3 (`AES256`), not a KMS CMK | No key policy, no key-usage audit trail | Evaluate a CMK once a second consumer of the logs exists |
