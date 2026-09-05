@@ -1,6 +1,6 @@
-# Personal notes - not for GitHub
-NOTES.md
-PROGRESS.md
+# Claude Code / vault memory - personal, never published
+CLAUDE.md
+_memory/
 
 # Obsidian config
 .obsidian/
@@ -11,6 +11,7 @@ PROGRESS.md
 *.tfstate
 *.tfstate.backup
 *.tfvars
+!terraform.tfvars.example
 
 # OS
 .DS_Store
