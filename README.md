@@ -25,6 +25,7 @@ The goal is to build a secure AWS environment from scratch. Isolated networking,
 - IAM role prepared for SSM-based access (no SSH, no port 22) — instance not deployed yet
 - Encrypted S3 storage with public access fully blocked
 - CloudTrail audit logging across all regions
+- VPC flow logs for network-level visibility
 
 ---
 
@@ -42,9 +43,10 @@ VPC (10.0.0.0/16)
     |--- Private Subnet (10.0.2.0/24)  → Private SG (inbound from public SG only)
          (no route to the IGW — isolation is enforced by routing, not by the SG)
 
-S3 Bucket (encrypted, versioned, public access blocked)
+S3 log archive (encrypted, versioned, TLS-only, public access blocked, 90-day retention)
     |
-CloudTrail → writes all AWS API activity to S3
+    |--- CloudTrail   → every AWS API call, all regions
+    |--- VPC flow logs → every accepted/rejected network flow in the VPC
 ```
 
 The public subnet accepts inbound HTTPS (443) from the internet.
@@ -61,7 +63,7 @@ Phase 2: Security Groups & IAM  (Completed)
          ↓
 Phase 3: Encrypted Storage (S3)  (Completed)
          ↓
-Phase 4: Audit Logging (CloudTrail)  (Completed)
+Phase 4: Audit Logging (CloudTrail + VPC flow logs)  (Completed)
          ↓
 Phase 5: Monitoring & Alerting  (Upcoming)
 ```
@@ -113,10 +115,15 @@ An EC2 instance role with SSM access attached, prepared for hosts that are not b
 ## Phase 3 — Encrypted Storage (Completed)
 
 ### `s3.tf` — S3 Bucket
-A dedicated logging bucket with the following:
-- **AES256 encryption** on all objects by default
-- **Versioning enabled** — overwrites keep the previous version. Versions can still be deleted by anyone with `s3:DeleteObjectVersion`; there is no Object Lock or MFA delete yet (see Known gaps)
+A central log archive. CloudTrail and VPC flow logs both write here, partitioned by AWS under `AWSLogs/<account>/`. One bucket, one policy, one lifecycle; it would be split only if retention or readers diverged.
+- **AES256 encryption** (SSE-S3) on all objects by default
+- **Versioning enabled** — overwrites keep the previous version. Versions can still be deleted by anyone with `s3:DeleteObjectVersion`; there is no Object Lock or MFA delete (see Known gaps)
 - **Public access fully blocked** — all four public access settings set to true
+- **ACLs disabled** (`BucketOwnerEnforced`) — the bucket owner owns every object; access is decided by the bucket policy only
+- **TLS enforced** — an explicit `Deny` for any request with `aws:SecureTransport = false`, on both the bucket and its objects. A `Deny` is the one place `Principal: "*"` is safe: it can only shrink access
+- **Retention is a decision, not an accident** — lifecycle expires current objects after 90 days, non-current versions after 30, and aborts stale multipart uploads after 7
+- **Bucket policy** holds every writer's statements in one place: CloudTrail (pinned to the exact trail ARN via `aws:SourceArn`) and flow-log delivery (pinned via `aws:SourceAccount` plus an `ArnLike` on the `logs` service ARN). Both are confused-deputy guards: the service can only write on behalf of this account
+- `force_destroy = true` so `terraform destroy` can remove a versioned bucket with objects in it. Lab setting, never for a production archive
 - Random suffix on the bucket name to ensure global uniqueness
 
 ---
@@ -128,7 +135,13 @@ Records every API call made in the AWS account:
 - Multi-region trail — captures activity across all regions, not just eu-west-1
 - Global service events included (IAM, STS, etc.)
 - Log file validation enabled — detects if logs are tampered with after delivery
-- Writes to the encrypted S3 bucket from Phase 3
+- Writes to the log archive from Phase 3; `depends_on` the bucket policy because the trail checks it can write at creation time
+
+### `flow_logs.tf` — VPC Flow Logs
+Every accepted and rejected flow in the VPC, delivered to the same log archive:
+- `traffic_type = "ALL"` — rejects are the interesting part for detection, accepts for forensics
+- S3 destination needs no IAM role; the bucket policy is what authorises `delivery.logs.amazonaws.com`
+- `depends_on` the bucket policy, otherwise Terraform may create the flow log first and delivery fails with `Access error`
 
 ---
 
@@ -142,11 +155,11 @@ These are the things a reviewer would find first. Listing them here is deliberat
 | 2 | ~~Private SG allows all ports/protocols from the public SG~~ Fixed: TCP 443 from the public SG only | Blast radius: a compromised web host could reach every listening port on the app host | Done. Egress on both SGs is still `0.0.0.0/0` and is narrowed together with the SSM endpoints (#3) |
 | 3 | SSM role exists but nothing can use it | No instance, and no network path from the private subnet to SSM | Add VPC interface endpoints (`ssm`, `ssmmessages`, `ec2messages`) and a test host, prove a Session Manager session, then destroy |
 | 4 | No NAT gateway | Private hosts cannot reach the internet for patches | Intentional for now: endpoints cover AWS APIs at lower cost and smaller surface than NAT |
-| 5 | Log bucket uses SSE-S3 (`AES256`), not a KMS CMK | No key policy, no key-usage audit trail | Evaluate a CMK once a second consumer of the logs exists |
-| 6 | Bucket policy has no `aws:SecureTransport` deny | Plaintext HTTP to the log bucket is not forbidden | Add an explicit deny for non-TLS requests |
-| 7 | Versioning on, but no Object Lock / MFA delete / lifecycle | Log file validation detects tampering; it does not prevent deletion | Object Lock in compliance mode for the CloudTrail prefix |
+| 5 | Log bucket uses SSE-S3 (`AES256`), not a KMS CMK | No key policy, no key-usage audit trail (CIS 3.7) | Chosen for cost (~$1/month per key plus API calls). Mitigations in place: TLS deny, public access block, versioning. A CMK earns its place once a second consumer of the logs exists |
+| 6 | ~~Bucket policy has no `aws:SecureTransport` deny~~ Fixed | Plaintext HTTP to the log bucket was not forbidden | Done: explicit `Deny` on bucket and objects |
+| 7 | Versioning on, lifecycle on, but no Object Lock / MFA delete | Log file validation detects tampering; it does not prevent deletion | Object Lock can only be enabled at bucket creation, never disabled, and with a retention rule it blocks `terraform destroy`. Incompatible with a tear-down lab; right answer for a real archive |
 | 8 | CloudTrail writes to S3 and stops | Logs nobody reads are storage, not detection | Phase 5: CloudWatch Logs + metric filters + alarms |
-| 9 | No VPC flow logs | No network-level visibility | Flow logs to the existing log bucket |
+| 9 | ~~No VPC flow logs~~ Fixed | No network-level visibility | Done: flow logs (ALL traffic) to the log archive |
 | 10 | Local Terraform state, no backend | State holds every resource and lives on one machine with no locking | S3 backend with DynamoDB locking; kept out of this demo so it deploys in one `apply` |
 | 11 | Everything hardcoded (region, CIDRs, names) | Cannot deploy a second environment | Variables + `terraform.tfvars.example` |
 | 12 | Flat layout, no modules | Fine at this size | First seam would be `network/` vs `logging/` modules |
@@ -179,6 +192,9 @@ Using IAM roles and SSM to access EC2 instances means no open port 22, no key pa
 
 **6. CloudTrail needs a specific S3 bucket policy**
 CloudTrail doesn't just write to any bucket — it requires the bucket policy to explicitly allow it, and the resource ARN must include the AWS account ID. A wildcard path like `/AWSLogs/*` is not enough. It has to be `/AWSLogs/{account-id}/*`.
+
+**7. Flow logs are delivered by the logs service, not by EC2**
+The principal is `delivery.logs.amazonaws.com` and the `aws:SourceArn` to pin is `arn:aws:logs:<region>:<account>:*` with `ArnLike`. Pinning the VPC or flow-log ARN instead looks right and fails silently with `Access error`.
 
 ---
 
