@@ -18,12 +18,17 @@ resource "aws_vpc_security_group_ingress_rule" "public_https_from_internet" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
-# TODO(step 3): narrow to 443 -> private SG and 443 -> VPC endpoint SG once endpoints exist.
-resource "aws_vpc_security_group_egress_rule" "public_all_outbound" {
-  security_group_id = aws_security_group.public.id
-  description       = "All outbound (to be narrowed once the private tier and SSM endpoints exist)"
-  ip_protocol       = "-1"
-  cidr_ipv4         = "0.0.0.0/0"
+# The only place the public tier sends traffic: the private tier, on 443.
+# No rule to the SSM endpoints: the endpoint SG does not admit the public SG,
+# so such a rule would match nothing. When a public host is built, add both
+# sides (endpoints-sg ingress from public-sg, public-sg egress to endpoints-sg).
+resource "aws_vpc_security_group_egress_rule" "public_https_to_private" {
+  security_group_id            = aws_security_group.public.id
+  description                  = "HTTPS to the private tier - the only outbound flow"
+  ip_protocol                  = "tcp"
+  from_port                    = 443
+  to_port                      = 443
+  referenced_security_group_id = aws_security_group.private.id
 }
 
 # Private tier: application hosts. Reachable only from the public tier, only on 443.
@@ -48,12 +53,25 @@ resource "aws_vpc_security_group_ingress_rule" "private_https_from_public" {
   referenced_security_group_id = aws_security_group.public.id
 }
 
-# The private subnet has no IGW/NAT route, so this rule is inert today. It is still
-# a latent gap: the day a NAT gateway is added, full outbound becomes live.
-# TODO(step 3): replace with 443 -> VPC endpoint SG (ssm, ssmmessages, ec2messages).
-resource "aws_vpc_security_group_egress_rule" "private_all_outbound" {
+# Egress encodes intent, not just what the route table happens to allow today:
+# the private tier talks to the SSM endpoints and to S3 through the gateway
+# endpoint, and nothing else. If a NAT gateway is ever added, this still holds.
+# IMDS, the VPC DNS resolver and Amazon Time Sync are link-local and exempt
+# from SG evaluation, so they keep working.
+resource "aws_vpc_security_group_egress_rule" "private_https_to_endpoints" {
+  security_group_id            = aws_security_group.private.id
+  description                  = "HTTPS to the SSM interface endpoints (agent registration and session channel)"
+  ip_protocol                  = "tcp"
+  from_port                    = 443
+  to_port                      = 443
+  referenced_security_group_id = aws_security_group.endpoints.id
+}
+
+resource "aws_vpc_security_group_egress_rule" "private_https_to_s3" {
   security_group_id = aws_security_group.private.id
-  description       = "All outbound (inert without a NAT route; to be narrowed to SSM endpoints)"
-  ip_protocol       = "-1"
-  cidr_ipv4         = "0.0.0.0/0"
+  description       = "HTTPS to S3 via the gateway endpoint (SSM agent updates, AL2023 dnf repos)"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  prefix_list_id    = aws_vpc_endpoint.s3.prefix_list_id
 }

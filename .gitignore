@@ -16,3 +16,4 @@ _memory/
 # OS
 .DS_Store
 Thumbs.db
+*.tfplan
