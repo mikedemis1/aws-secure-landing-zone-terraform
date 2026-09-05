@@ -12,6 +12,6 @@ resource "aws_flow_log" "main" {
   depends_on = [aws_s3_bucket_policy.logs]
 
   tags = {
-    Name = "secure-landing-zone-vpc-flow-logs"
+    Name = "${var.project_name}-vpc-flow-logs"
   }
 }

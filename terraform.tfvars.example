@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (git-ignored) and adjust. Every value has a default in
+# variables.tf, so a clean clone plans without this file.
+
+aws_region   = "eu-west-1"
+project_name = "secure-landing-zone"
+vpc_cidr     = "10.0.0.0/16"
+az_count     = 2

@@ -18,7 +18,7 @@ This is a hands-on infrastructure project I built as part of my journey into Clo
 The goal is to build a secure AWS environment from scratch. Isolated networking, firewall rules, IAM permissions, encrypted storage, and audit logging. Each piece reflects something you would actually find in a production cloud environment.
 
 ### What This Project Covers
-- Secure AWS network architecture using VPC, subnets, and routing
+- Secure AWS network architecture using VPC, subnets, and routing, across two availability zones
 - Infrastructure as Code with Terraform
 - Network isolation between public and private resources
 - Security groups to control traffic at the resource level
@@ -36,11 +36,13 @@ Internet
     |
 Internet Gateway
     |
-VPC (10.0.0.0/16)
+VPC (10.0.0.0/16, default SG locked down)
     |
-    |--- Public Subnet (10.0.1.0/24)   → Public SG (HTTPS only)
+    |--- Public Subnets  10.0.0.0/24 (1a), 10.0.1.0/24 (1b)   → one shared route table → IGW
+    |                                                          → Public SG (HTTPS only)
     |
-    |--- Private Subnet (10.0.2.0/24)  → Private SG (inbound from public SG only)
+    |--- Private Subnets 10.0.10.0/24 (1a), 10.0.11.0/24 (1b) → one route table per AZ, local route only
+                                                               → Private SG (443 from public SG only)
          (no route to the IGW — isolation is enforced by routing, not by the SG)
 
 S3 log archive (encrypted, versioned, TLS-only, public access blocked, 90-day retention)
@@ -72,26 +74,31 @@ Phase 5: Monitoring & Alerting  (Upcoming)
 
 ## Phase 1 — Networking (Completed)
 
-### `providers.tf`
-Configures Terraform to use AWS in `eu-west-1` (Ireland).
+### `providers.tf` and `variables.tf`
+Region, project name, VPC CIDR and AZ count are variables with defaults, so a clean clone plans without a tfvars file; `terraform.tfvars.example` shows what to override. Nothing else is a variable on purpose: a knob for a value that never changes is noise. `default_tags` stamps `Project` and `ManagedBy` on every resource so everything the repo created can be found and cost-attributed.
 
 ### `vpc.tf` — Virtual Private Cloud
 The isolated network that contains everything. Nothing enters or exits unless explicitly configured.
-- CIDR: `10.0.0.0/16`
-- DNS support enabled
+- CIDR: `10.0.0.0/16` (variable)
+- DNS support and hostnames enabled — required later by VPC interface endpoints with private DNS
+- **Default security group locked down**: every VPC ships with a default SG that allows all traffic from itself. Adopting it with no rules strips them, so nothing can run on implicit network permissions (CIS AWS Foundations)
+- Availability zones come from a data source filtered to `opt-in-not-required`. AZ names are per-account aliases; the physical zone IDs are exposed as an output
 
-### `subnets.tf` — Public & Private Subnets
-Splits the VPC into two zones:
-- **Public Subnet** (`10.0.1.0/24`) — for resources that need internet access
-- **Private Subnet** (`10.0.2.0/24`) — for resources that should stay isolated
+### `subnets.tf` — Public & Private Subnets, per AZ
+One public and one private subnet in each of two AZs, keyed by AZ name (`for_each`), so removing an AZ does not shift the others. CIDRs are carved with `cidrsubnet()` from the VPC range: /24 slots 0-9 for public, 10-19 for private, leaving room for more AZs and a third tier without renumbering.
+- **Public** (`10.0.0.0/24`, `10.0.1.0/24`) — "public" means a route to the IGW exists, not that hosts are reachable; `map_public_ip_on_launch` is explicitly false
+- **Private** (`10.0.10.0/24`, `10.0.11.0/24`) — private by routing: no `0.0.0.0/0` route in their route tables
 
 ### `internet_gateway.tf` — Internet Gateway
 Connects the VPC to the internet. Attaches at the VPC level, not to individual subnets.
 
 ### `route_tables.tf` — Route Tables
 Controls where traffic goes:
-- Public subnet → `0.0.0.0/0` → Internet Gateway ✅
-- Private subnet → no internet route ✅
+- One public route table, shared by every public subnet → `0.0.0.0/0` → Internet Gateway. The IGW is VPC-scoped, so there is nothing zonal to isolate
+- One private route table **per AZ**, explicitly associated, local route only. Explicit over implicit (an unassociated subnet falls back to the VPC main table, a default nobody owns), and fault isolation: anything that would ever go into a private route, a NAT gateway most of all, is zonal, and a shared table turns an AZ-a failure into an AZ-b blackhole
+
+### `outputs.tf`
+VPC id and CIDR, AZ names and zone IDs, subnet and route-table ids as maps keyed by AZ. This is what the next layer (VPC endpoints, hosts) consumes instead of reaching into resource internals.
 
 ---
 
@@ -151,7 +158,7 @@ These are the things a reviewer would find first. Listing them here is deliberat
 
 | # | Current state | Why it matters | What I would change |
 |---|---------------|----------------|---------------------|
-| 1 | Both subnets in a single AZ (`eu-west-1a`) | No HA; an ALB needs two AZs | Add a second AZ with a public and private subnet each |
+| 1 | ~~Both subnets in a single AZ~~ Fixed | No HA; an ALB needs two AZs | Done: two AZs, one public and one private subnet each, per-AZ private route tables. Honest framing: until a workload spans AZs this is a foundation, not a control |
 | 2 | ~~Private SG allows all ports/protocols from the public SG~~ Fixed: TCP 443 from the public SG only | Blast radius: a compromised web host could reach every listening port on the app host | Done. Egress on both SGs is still `0.0.0.0/0` and is narrowed together with the SSM endpoints (#3) |
 | 3 | SSM role exists but nothing can use it | No instance, and no network path from the private subnet to SSM | Add VPC interface endpoints (`ssm`, `ssmmessages`, `ec2messages`) and a test host, prove a Session Manager session, then destroy |
 | 4 | No NAT gateway | Private hosts cannot reach the internet for patches | Intentional for now: endpoints cover AWS APIs at lower cost and smaller surface than NAT |
@@ -161,8 +168,9 @@ These are the things a reviewer would find first. Listing them here is deliberat
 | 8 | CloudTrail writes to S3 and stops | Logs nobody reads are storage, not detection | Phase 5: CloudWatch Logs + metric filters + alarms |
 | 9 | ~~No VPC flow logs~~ Fixed | No network-level visibility | Done: flow logs (ALL traffic) to the log archive |
 | 10 | Local Terraform state, no backend | State holds every resource and lives on one machine with no locking | S3 backend with DynamoDB locking; kept out of this demo so it deploys in one `apply` |
-| 11 | Everything hardcoded (region, CIDRs, names) | Cannot deploy a second environment | Variables + `terraform.tfvars.example` |
-| 12 | Flat layout, no modules | Fine at this size | First seam would be `network/` vs `logging/` modules |
+| 11 | ~~Everything hardcoded (region, CIDRs, names)~~ Fixed | Cannot deploy a second environment | Done: four variables with defaults and validation, `terraform.tfvars.example`, `default_tags` |
+| 12 | Flat layout, no modules | Fine at this size | First seam would be `network/` vs `logging/` modules. `outputs.tf` already exposes what a `network` module would |
+| 13 | Default NACLs left in place | A second, stateless rule set to keep in sync | Deliberate: SGs are the enforcement point; in a VPC with no inbound path a custom NACL adds sync cost for no gain |
 
 ## Upcoming
 
@@ -185,7 +193,7 @@ I assumed the association happened automatically when creating a route table. It
 My first instinct was that the IGW should go on the public subnet. In reality it attaches to the VPC, and it's the Route Table that makes a subnet public by pointing traffic through the IGW.
 
 **4. Private subnets are isolated through routing, not firewalls**
-The private subnet has no internet access simply because it has no route to the internet. No firewall rule needed. Just the absence of a route.
+The private subnet has no internet access simply because it has no route to the internet. No firewall rule needed. Just the absence of a route. (And the route table must be explicit: a subnet with no association silently uses the VPC main table.)
 
 **5. SSM over SSH is a real security improvement**
 Using IAM roles and SSM to access EC2 instances means no open port 22, no key pairs to manage, and a full audit trail of every session. It felt like extra complexity at first but it's the right way to do it. What I learned building this: the role alone is not enough — the SSM agent also needs a network path to the SSM endpoints, which a private subnet with no NAT does not have.
@@ -205,6 +213,7 @@ The principal is `delivery.logs.amazonaws.com` and the `aws:SourceArn` to pin is
 - AWS CLI configured (`aws configure`)
 
 ```bash
+cp terraform.tfvars.example terraform.tfvars   # optional: every variable has a default
 terraform init
 terraform plan
 terraform apply

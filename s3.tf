@@ -8,7 +8,7 @@ data "aws_region" "current" {}
 locals {
   account_id = data.aws_caller_identity.current.account_id
   region     = data.aws_region.current.name
-  trail_name = "secure-landing-zone-trail"
+  trail_name = "${var.project_name}-trail"
   # Built as a string (not aws_cloudtrail.main.arn) to avoid a cycle: the trail
   # depends on the policy, and the policy pins the trail.
   trail_arn = "arn:aws:cloudtrail:${local.region}:${local.account_id}:trail/${local.trail_name}"
@@ -18,14 +18,14 @@ locals {
 }
 
 resource "aws_s3_bucket" "logs" {
-  bucket = "secure-landing-zone-logs-${random_id.suffix.hex}"
+  bucket = "${var.project_name}-logs-${random_id.suffix.hex}"
 
   # Lab setting: lets `terraform destroy` remove a versioned bucket that has
   # objects in it. Never set this on a production log archive.
   force_destroy = true
 
   tags = {
-    Name = "secure-landing-zone-logs"
+    Name = "${var.project_name}-logs"
   }
 }
 

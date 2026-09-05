@@ -1,11 +1,11 @@
 # Public tier: the only thing the internet can reach. Accepts HTTPS and nothing else.
 resource "aws_security_group" "public" {
-  name        = "public-sg"
+  name        = "${var.project_name}-public-sg"
   description = "Public tier: inbound HTTPS from the internet"
   vpc_id      = aws_vpc.main.id
 
   tags = {
-    Name = "public-sg"
+    Name = "${var.project_name}-public-sg"
   }
 }
 
@@ -30,12 +30,12 @@ resource "aws_vpc_security_group_egress_rule" "public_all_outbound" {
 # Membership-based source (security group, not CIDR): a host in the public subnet
 # that does not carry the public SG still cannot reach this tier.
 resource "aws_security_group" "private" {
-  name        = "private-sg"
+  name        = "${var.project_name}-private-sg"
   description = "Private tier: inbound HTTPS from the public SG only"
   vpc_id      = aws_vpc.main.id
 
   tags = {
-    Name = "private-sg"
+    Name = "${var.project_name}-private-sg"
   }
 }
 
