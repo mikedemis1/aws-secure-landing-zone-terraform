@@ -16,3 +16,6 @@ _memory/
 .DS_Store
 Thumbs.db
 *.tfplan
+
+# Interview prep, unanswered questionnaire - never published
+DECISIONS.md
