@@ -31,31 +31,31 @@ The goal is to build a secure AWS environment from scratch. Isolated networking,
 
 ## Architecture
 
-```
-Internet
-    |
-Internet Gateway
-    |
-VPC (10.0.0.0/16, default SG locked down)
-    |
-    |--- Public Subnets  10.0.0.0/24 (1a), 10.0.1.0/24 (1b)   → one shared route table → IGW
-    |                                                          → Public SG (HTTPS only)
-    |
-    |--- Private Subnets 10.0.10.0/24 (1a), 10.0.11.0/24 (1b) → one route table per AZ: local + S3 gateway endpoint
-                                                               → Private SG (in: 443 from public SG · out: 443 to endpoints SG, 443 to S3 prefix list)
-         (no route to the IGW, isolation is enforced by routing, not by the SG)
-         |--- VPC interface endpoints (ssm, ssmmessages, ec2messages), one ENI per AZ, private DNS on
-         |       → Endpoints SG (443 from private SG only)
-         |--- [demo] t3.micro, no public IP, no key pair, IMDSv2 required → reached only via Session Manager
+```mermaid
+flowchart TD
+    Internet(("Internet"))
+    Public["Public subnets: HTTPS in from internet"]
+    Private["Private subnets: no route to internet"]
+    Operator["Operator CLI"]
+    Endpoints["VPC interface endpoints: ssm, ssmmessages, ec2messages"]
+    Host["Private EC2 host, optional"]
+    SSMService["AWS SSM public API"]
+    Archive["S3 log archive: encrypted, versioned, TLS only"]
 
-S3 log archive (encrypted, versioned, TLS-only, public access blocked, 90-day retention)
-    |
-    |--- CloudTrail   → every AWS API call, all regions
-    |--- VPC flow logs → every accepted/rejected network flow in the VPC
+    Internet -- "443" --> Public
+    Public -- "443, public SG to private SG" --> Private
+    Host -- "outbound 443, no inbound path" --> Endpoints
+    Endpoints --> SSMService
+    Operator -- "session commands" --> SSMService
+    Private -- "CloudTrail, all regions" --> Archive
+    Private -- "VPC flow logs" --> Archive
 ```
 
-The public subnet accepts inbound HTTPS (443) from the internet.
-The private subnet accepts traffic only from the public security group. Nothing else can reach it.
+This repo is frozen; current work continues in
+[novapay-security-infra](../novapay-security-infra). The host opens an
+outbound connection to the interface endpoints, the operator talks to the
+public SSM API, and there is no inbound path into the VPC. That absence of an
+inbound route is the point of the design.
 
 ---
 
@@ -270,6 +270,28 @@ terraform destroy -var create_test_host=true    # the interface endpoints are th
 ```
 
 ---
+
+## What I'd Improve
+
+Frozen repo, thinnest security material of the four. Pulled from `README.md`
+and `SECURITY.md`, not invented for this section.
+
+- **The S3 gateway endpoint policy is `Allow *`.** It is an exfiltration
+  channel in a real account, left as-is here because scoping it would also
+  block the AWS-owned buckets the SSM agent and package repositories need.
+  A production version would need a narrower policy that still lets those
+  buckets through.
+- **The log archive uses `force_destroy = true` and no deletion protection.**
+  A lab setting so `terraform destroy` can remove a versioned bucket in one
+  command. A real archive should not be destroyable by the same command that
+  tears down the network.
+- **Phase 5, monitoring and alerting, was never built.** No alarms, no
+  notifications. Nothing in this landing zone tells anyone when something
+  changes.
+- **This is a description of code, not of a live account.** `SECURITY.md`
+  does not say the account was deleted, it says the code no longer matches
+  the account's current state. A `terraform plan` against a fresh account
+  today would differ from what this README describes.
 
 ## Tech Stack
 
