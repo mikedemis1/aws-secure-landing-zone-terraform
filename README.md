@@ -1,4 +1,4 @@
-# AWS Secure Landing Zone — Terraform
+# AWS Secure Landing Zone: Terraform
 
 <div align="center">
 
@@ -43,7 +43,7 @@ VPC (10.0.0.0/16, default SG locked down)
     |
     |--- Private Subnets 10.0.10.0/24 (1a), 10.0.11.0/24 (1b) → one route table per AZ: local + S3 gateway endpoint
                                                                → Private SG (in: 443 from public SG · out: 443 to endpoints SG, 443 to S3 prefix list)
-         (no route to the IGW — isolation is enforced by routing, not by the SG)
+         (no route to the IGW, isolation is enforced by routing, not by the SG)
          |--- VPC interface endpoints (ssm, ssmmessages, ec2messages), one ENI per AZ, private DNS on
          |       → Endpoints SG (443 from private SG only)
          |--- [demo] t3.micro, no public IP, no key pair, IMDSv2 required → reached only via Session Manager
@@ -55,7 +55,7 @@ S3 log archive (encrypted, versioned, TLS-only, public access blocked, 90-day re
 ```
 
 The public subnet accepts inbound HTTPS (443) from the internet.
-The private subnet accepts traffic only from the public security group — nothing else can reach it.
+The private subnet accepts traffic only from the public security group. Nothing else can reach it.
 
 ---
 
@@ -77,27 +77,27 @@ Phase 5: Monitoring & Alerting  (Upcoming)
 
 ---
 
-## Phase 1 — Networking (Completed)
+## Phase 1: Networking (Completed)
 
 ### `providers.tf` and `variables.tf`
 Region, project name, VPC CIDR and AZ count are variables with defaults, so a clean clone plans without a tfvars file; `terraform.tfvars.example` shows what to override. Nothing else is a variable on purpose: a knob for a value that never changes is noise. `default_tags` stamps `Project` and `ManagedBy` on every resource so everything the repo created can be found and cost-attributed.
 
-### `vpc.tf` — Virtual Private Cloud
+### `vpc.tf`: Virtual Private Cloud
 The isolated network that contains everything. Nothing enters or exits unless explicitly configured.
 - CIDR: `10.0.0.0/16` (variable)
-- DNS support and hostnames enabled — required later by VPC interface endpoints with private DNS
+- DNS support and hostnames enabled, required later by VPC interface endpoints with private DNS
 - **Default security group locked down**: every VPC ships with a default SG that allows all traffic from itself. Adopting it with no rules strips them, so nothing can run on implicit network permissions (CIS AWS Foundations)
 - Availability zones come from a data source filtered to `opt-in-not-required`. AZ names are per-account aliases; the physical zone IDs are exposed as an output
 
-### `subnets.tf` — Public & Private Subnets, per AZ
+### `subnets.tf`: Public & Private Subnets, per AZ
 One public and one private subnet in each of two AZs, keyed by AZ name (`for_each`), so removing an AZ does not shift the others. CIDRs are carved with `cidrsubnet()` from the VPC range: /24 slots 0-9 for public, 10-19 for private, leaving room for more AZs and a third tier without renumbering.
-- **Public** (`10.0.0.0/24`, `10.0.1.0/24`) — "public" means a route to the IGW exists, not that hosts are reachable; `map_public_ip_on_launch` is explicitly false
-- **Private** (`10.0.10.0/24`, `10.0.11.0/24`) — private by routing: no `0.0.0.0/0` route in their route tables
+- **Public** (`10.0.0.0/24`, `10.0.1.0/24`): "public" means a route to the IGW exists, not that hosts are reachable; `map_public_ip_on_launch` is explicitly false
+- **Private** (`10.0.10.0/24`, `10.0.11.0/24`), private by routing: no `0.0.0.0/0` route in their route tables
 
-### `internet_gateway.tf` — Internet Gateway
+### `internet_gateway.tf`: Internet Gateway
 Connects the VPC to the internet. Attaches at the VPC level, not to individual subnets.
 
-### `route_tables.tf` — Route Tables
+### `route_tables.tf`: Route Tables
 Controls where traffic goes:
 - One public route table, shared by every public subnet → `0.0.0.0/0` → Internet Gateway. The IGW is VPC-scoped, so there is nothing zonal to isolate
 - One private route table **per AZ**, explicitly associated, local route only. Explicit over implicit (an unassociated subnet falls back to the VPC main table, a default nobody owns), and fault isolation: anything that would ever go into a private route, a NAT gateway most of all, is zonal, and a shared table turns an AZ-a failure into an AZ-b blackhole
@@ -107,34 +107,34 @@ VPC id and CIDR, AZ names and zone IDs, subnet and route-table ids as maps keyed
 
 ---
 
-## Phase 2 — Security Groups & IAM (Completed)
+## Phase 2: Security Groups & IAM (Completed)
 
-### `security_groups.tf` — Firewall Rules
+### `security_groups.tf`: Firewall Rules
 Two security groups, one per subnet:
-- **Public SG** — inbound HTTPS (443) from anywhere; outbound only TCP 443 to the private SG
-- **Private SG** — inbound TCP 443 only, and only from the public SG (source is a security group, not a CIDR, so membership decides, not IP). Outbound only TCP 443 to the endpoints SG and to the S3 gateway prefix list. Egress encodes intent, not just what the route table happens to allow today: if a NAT gateway were ever added, this tier still could not reach the internet
+- **Public SG**, inbound HTTPS (443) from anywhere; outbound only TCP 443 to the private SG
+- **Private SG**, inbound TCP 443 only, and only from the public SG (source is a security group, not a CIDR, so membership decides, not IP). Outbound only TCP 443 to the endpoints SG and to the S3 gateway prefix list. Egress encodes intent, not just what the route table happens to allow today: if a NAT gateway were ever added, this tier still could not reach the internet
 - Rules are standalone `aws_vpc_security_group_ingress_rule` / `egress_rule` resources, one per rule, each with a `description` that states why it exists. This is also what lets two SGs reference each other (private ↔ endpoints) without a dependency cycle
 - The VPC **default security group** is adopted with no rules, so nothing can run on implicit network permissions
 
-### `iam.tf` — IAM Role
+### `iam.tf`: IAM Role
 An EC2 instance role with SSM access attached, prepared for hosts that are not built yet:
-- No SSH keys, no port 22 — the intent is that instances are reached through AWS Systems Manager Session Manager
+- No SSH keys, no port 22, the intent is that instances are reached through AWS Systems Manager Session Manager
 - The role alone is permission, not reachability: the agent still needs a network path to SSM. Phase 2b provides it with VPC interface endpoints and proves the session end to end
 - `AmazonSSMManagedInstanceCore` policy attached
 - Instance profile created so the role can be assigned to EC2 instances
 
 ---
 
-## Phase 2b — Private access without SSH, NAT or public IPs (Completed)
+## Phase 2b: Private access without SSH, NAT or public IPs (Completed)
 
-### `endpoints.tf` — VPC endpoints
+### `endpoints.tf`: VPC endpoints
 The private tier has no route to the internet, so AWS services are reached through VPC endpoints instead of a NAT gateway: cheaper, and the traffic never leaves the VPC.
 - **Three interface endpoints** (`ssm`, `ssmmessages`, `ec2messages`), one ENI in each private subnet, with private DNS on. `ssm` is registration and inventory, `ssmmessages` is the session data channel (an outbound WebSocket from the agent), `ec2messages` is the Run Command delivery path
-- **Endpoints SG** — inbound 443 from the private SG only, no egress rule (the endpoint only answers; SGs are stateful). A security-group reference rather than the VPC CIDR: the intent is "the private tier may use SSM", not "anything in this address range"
+- **Endpoints SG**, inbound 443 from the private SG only, no egress rule (the endpoint only answers; SGs are stateful). A security-group reference rather than the VPC CIDR: the intent is "the private tier may use SSM", not "anything in this address range"
 - **S3 gateway endpoint** on the private route tables. Free, no ENI. Covers the SSM agent's update bucket and the AL2023 package repositories, which are served from S3. Its default policy is `Allow *`, which is an exfiltration channel in a real account; left as-is here because scoping it would also block the AWS-owned buckets
 - `private_dns_enabled` rewrites `ssm.eu-west-1.amazonaws.com` for the whole VPC to the endpoint ENIs. It needs DNS support and hostnames on the VPC; with it off, the agent resolves public IPs, finds no route, and never registers, silently
 
-### `ec2.tf` — test host (off by default)
+### `ec2.tf`: test host (off by default)
 A t3.micro in the first private subnet, behind `create_test_host = false`, so a plain `apply` builds only the landing zone.
 - No `key_name`, no public IP: there is no SSH path, by design
 - IMDSv2 required with a hop limit of 1, so a server-side request forgery or a container cannot lift the role's credentials from the metadata service
@@ -179,34 +179,34 @@ Cost of the whole exercise for about one hour: under 0.20 USD. The six endpoint 
 
 ---
 
-## Phase 3 — Encrypted Storage (Completed)
+## Phase 3: Encrypted Storage (Completed)
 
-### `s3.tf` — S3 Bucket
+### `s3.tf`: S3 Bucket
 A central log archive. CloudTrail and VPC flow logs both write here, partitioned by AWS under `AWSLogs/<account>/`. One bucket, one policy, one lifecycle; it would be split only if retention or readers diverged.
 - **AES256 encryption** (SSE-S3) on all objects by default
-- **Versioning enabled** — overwrites keep the previous version; lifecycle expires non-current versions after 30 days
-- **Public access fully blocked** — all four public access settings set to true
-- **ACLs disabled** (`BucketOwnerEnforced`) — the bucket owner owns every object; access is decided by the bucket policy only
-- **TLS enforced** — an explicit `Deny` for any request with `aws:SecureTransport = false`, on both the bucket and its objects. A `Deny` is the one place `Principal: "*"` is safe: it can only shrink access
-- **Retention is a decision, not an accident** — lifecycle expires current objects after 90 days, non-current versions after 30, and aborts stale multipart uploads after 7
+- **Versioning enabled**, overwrites keep the previous version; lifecycle expires non-current versions after 30 days
+- **Public access fully blocked**, all four public access settings set to true
+- **ACLs disabled** (`BucketOwnerEnforced`), the bucket owner owns every object; access is decided by the bucket policy only
+- **TLS enforced**, an explicit `Deny` for any request with `aws:SecureTransport = false`, on both the bucket and its objects. A `Deny` is the one place `Principal: "*"` is safe: it can only shrink access
+- **Retention is a decision, not an accident**, lifecycle expires current objects after 90 days, non-current versions after 30, and aborts stale multipart uploads after 7
 - **Bucket policy** holds every writer's statements in one place: CloudTrail (pinned to the exact trail ARN via `aws:SourceArn`) and flow-log delivery (pinned via `aws:SourceAccount` plus an `ArnLike` on the `logs` service ARN). Both are confused-deputy guards: the service can only write on behalf of this account
 - `force_destroy = true` so `terraform destroy` can remove a versioned bucket with objects in it. Lab setting, never for a production archive
 - Random suffix on the bucket name to ensure global uniqueness
 
 ---
 
-## Phase 4 — Audit Logging (Completed)
+## Phase 4: Audit Logging (Completed)
 
-### `cloudtrail.tf` — CloudTrail
+### `cloudtrail.tf`: CloudTrail
 Records every API call made in the AWS account:
-- Multi-region trail — captures activity across all regions, not just eu-west-1
+- Multi-region trail, captures activity across all regions, not just eu-west-1
 - Global service events included (IAM, STS, etc.)
-- Log file validation enabled — detects if logs are tampered with after delivery
+- Log file validation enabled, detects if logs are tampered with after delivery
 - Writes to the log archive from Phase 3; `depends_on` the bucket policy because the trail checks it can write at creation time
 
-### `flow_logs.tf` — VPC Flow Logs
+### `flow_logs.tf`: VPC Flow Logs
 Every accepted and rejected flow in the VPC, delivered to the same log archive:
-- `traffic_type = "ALL"` — rejects are the interesting part for detection, accepts for forensics
+- `traffic_type = "ALL"`, rejects are the interesting part for detection, accepts for forensics
 - S3 destination needs no IAM role; the bucket policy is what authorises `delivery.logs.amazonaws.com`
 - `depends_on` the bucket policy, otherwise Terraform may create the flow log first and delivery fails with `Access error`
 
@@ -224,7 +224,7 @@ Every accepted and rejected flow in the VPC, delivered to the same log archive:
 ## Lessons Learned
 
 **1. Every resource needs to know which VPC it belongs to**
-Every resource — subnets, route tables, gateways — requires a `vpc_id`. At first it felt repetitive, but it makes sense. AWS needs to know which network each resource belongs to. The VPC is the boundary.
+Every resource, subnets, route tables, gateways, requires a `vpc_id`. At first it felt repetitive, but it makes sense. AWS needs to know which network each resource belongs to. The VPC is the boundary.
 
 **2. The Route Table and the Subnet are not automatically linked**
 I assumed the association happened automatically when creating a route table. It doesn't. The `aws_route_table_association` resource is what actually connects them. Without it, the route table exists but has no effect.
@@ -236,10 +236,10 @@ My first instinct was that the IGW should go on the public subnet. In reality it
 The private subnet has no internet access simply because it has no route to the internet. No firewall rule needed. Just the absence of a route. (And the route table must be explicit: a subnet with no association silently uses the VPC main table.)
 
 **5. SSM over SSH is a real security improvement**
-Using IAM roles and SSM to access EC2 instances means no open port 22, no key pairs to manage, and a full audit trail of every session. It felt like extra complexity at first but it's the right way to do it. What I learned building this: the role alone is not enough — the SSM agent also needs a network path to the SSM endpoints, which a private subnet with no NAT does not have.
+Using IAM roles and SSM to access EC2 instances means no open port 22, no key pairs to manage, and a full audit trail of every session. It felt like extra complexity at first but it's the right way to do it. What I learned building this: the role alone is not enough, the SSM agent also needs a network path to the SSM endpoints, which a private subnet with no NAT does not have.
 
 **6. CloudTrail needs a specific S3 bucket policy**
-CloudTrail doesn't just write to any bucket — it requires the bucket policy to explicitly allow it, and the resource ARN must include the AWS account ID. A wildcard path like `/AWSLogs/*` is not enough. It has to be `/AWSLogs/{account-id}/*`.
+CloudTrail doesn't just write to any bucket. It requires the bucket policy to explicitly allow it, and the resource ARN must include the AWS account ID. A wildcard path like `/AWSLogs/*` is not enough. It has to be `/AWSLogs/{account-id}/*`.
 
 **7. Flow logs are delivered by the logs service, not by EC2**
 The principal is `delivery.logs.amazonaws.com` and the `aws:SourceArn` to pin is `arn:aws:logs:<region>:<account>:*` with `ArnLike`. Pinning the VPC or flow-log ARN instead looks right and fails silently with `Access error`.
