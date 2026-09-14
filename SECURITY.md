@@ -2,9 +2,12 @@
 
 ## What this repository is
 
-The first landing zone I built, kept as the record of it. Feature work is frozen
-and the current platform work lives in
-[novapay-security-infra](https://github.com/mikedemis1/novapay-security-infra).
+The first landing zone I built: private-subnet access with no SSH, no NAT
+gateway and no inbound path, proven end to end over SSM Session Manager. A
+separate, later project,
+[novapay-security-infra](https://github.com/mikedemis1/novapay-security-infra),
+builds an independent multi-account landing zone from scratch; it does not
+extend or depend on this repo's code.
 
 It is a lab. It was applied against a real AWS account and destroyed after each
 test. Nothing here has ever held real data.
@@ -14,7 +17,7 @@ test. Nothing here has ever held real data.
 Open an issue, or use GitHub's private vulnerability reporting if the finding
 should not be public first.
 
-Since the repository is frozen, expect a fix only where the Terraform would
+This repo gets fixes on request, weighted toward anything the Terraform would
 teach someone the wrong thing. A finding that matters is worth reporting for
 exactly that reason: this code is read as an example.
 

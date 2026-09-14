@@ -5,7 +5,7 @@
 ![Type](https://img.shields.io/badge/Type-Cloud%20Security%20Infrastructure-red?style=for-the-badge&logo=amazonaws)
 ![Tool](https://img.shields.io/badge/Tool-Terraform-purple?style=for-the-badge&logo=terraform)
 ![Cloud](https://img.shields.io/badge/Cloud-AWS-orange?style=for-the-badge&logo=amazonaws)
-![Status](https://img.shields.io/badge/Status-In%20Progress-blue?style=for-the-badge)
+![Status](https://img.shields.io/badge/Status-Complete-brightgreen?style=for-the-badge)
 
 </div>
 
@@ -51,8 +51,12 @@ flowchart TD
     Private -- "VPC flow logs" --> Archive
 ```
 
-This repo is frozen; current work continues in
-[novapay-security-infra](../novapay-security-infra). The host opens an
+This repo proves one thing end to end: private-subnet reachability with no
+SSH, no NAT gateway and no inbound path, using SSM Session Manager over VPC
+interface endpoints. It is a separate, smaller-scope project from
+[novapay-security-infra](../novapay-security-infra), not a piece it depends
+on: novapay builds its own multi-account landing zone, networking and
+guardrails from scratch, and shares no code with this repo. The host opens an
 outbound connection to the interface endpoints, the operator talks to the
 public SSM API, and there is no inbound path into the VPC. That absence of an
 inbound route is the point of the design.
@@ -72,7 +76,7 @@ Phase 4: Audit Logging (CloudTrail + VPC flow logs)  (Completed)
          ↓
 Phase 2b: SSM access proof via VPC endpoints  (Completed)
          ↓
-Phase 5: Monitoring & Alerting  (Upcoming)
+Phase 5: Monitoring & Alerting  (Not built, see below)
 ```
 
 ---
@@ -212,7 +216,11 @@ Every accepted and rejected flow in the VPC, delivered to the same log archive:
 
 ---
 
-## Upcoming
+## Not built
+
+Phase 5 (CloudWatch alarms, SNS notifications) was scoped but never
+implemented here. The repo is closed at the network/access layer described
+above; monitoring and alerting were not part of what it set out to prove.
 
 | Phase | Resource | Purpose |
 |-------|----------|---------|
@@ -273,8 +281,9 @@ terraform destroy -var create_test_host=true    # the interface endpoints are th
 
 ## What I'd Improve
 
-Frozen repo, thinnest security material of the four. Pulled from `README.md`
-and `SECURITY.md`, not invented for this section.
+Scoped to the network/access layer, so it's the thinnest security material
+of the four. Pulled from `README.md` and `SECURITY.md`, not invented for
+this section.
 
 - **The S3 gateway endpoint policy is `Allow *`.** It is an exfiltration
   channel in a real account, left as-is here because scoping it would also
@@ -302,4 +311,4 @@ and `SECURITY.md`, not invented for this section.
 
 ---
 
-*Part of an ongoing Cloud Security Engineer portfolio. Phase 5 (Monitoring & Alerting) coming next.*
+*Part of a Cloud Security Engineer portfolio.*
